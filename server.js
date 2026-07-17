@@ -26,7 +26,8 @@ app.use(cors({
     "http://localhost:3000",
     "https://battlecode-frontend-cc.vercel.app",
     "https://battlecode-backend.ieeecsvit.com",
-    "https://battlecode.ieeecsvit.com"
+    "https://battlecode.ieeecsvit.com",
+    "https://battlecode-frontend-yantra.vercel.app"
   ],
   methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
   credentials: true
@@ -39,7 +40,8 @@ const io = new Server(httpServer, {
       "http://localhost:3000",
       "https://battlecode-frontend-cc.vercel.app",
       "https://battlecode-backend.ieeecsvit.com",
-      "https://battlecode.ieeecsvit.com"
+      "https://battlecode.ieeecsvit.com",
+      "https://battlecode-frontend-yantra.vercel.app/"
     ],
     methods: ["GET", "POST", "PUT", "PATCH", "DELETE"],
     credentials: true,
