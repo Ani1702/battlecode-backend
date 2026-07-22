@@ -22,10 +22,14 @@ jobs:
           key: ${{ secrets.EC2_SSH_KEY }}
 
           script: |
+            set -e
+
             cd /home/ubuntu/battlecode-backend
 
             git fetch origin
             git reset --hard origin/gravitas-26
+
+            docker builder prune -af
 
             docker compose up -d --build
 
