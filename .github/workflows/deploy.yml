@@ -1,0 +1,32 @@
+name: Deploy Backend to EC2
+
+on:
+  push:
+    branches:
+      - gravitas-26
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Deploy via SSH
+        uses: appleboy/ssh-action@v1.2.0
+
+        with:
+          host: ${{ secrets.EC2_HOST }}
+          username: ${{ secrets.EC2_USER }}
+          key: ${{ secrets.EC2_SSH_KEY }}
+
+          script: |
+            cd /home/ubuntu/battlecode-backend
+
+            git fetch origin
+            git reset --hard origin/gravitas-26
+
+            docker compose up -d --build
+
+            docker builder prune -f
