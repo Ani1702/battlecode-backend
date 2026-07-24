@@ -1,3 +1,6 @@
+// min passed_ratio required to earn the submit-count/time bonuses in Round 1 & 2
+const CORRECTNESS_THRESHOLD = 0.8;
+
 //submits are the number of submits for a particular questions NOT ROUND
 export const ScoreRound0 = (totalcases, passedcases, submits) => {
     var score = 0;
@@ -44,11 +47,13 @@ export const ScoreRound1 = (time_left, totalcases, passedcases, difficulty, win,
     if (win) {
         current_score += (max_score * 0.4);
     }
-    if (submits <= 3) {
-        current_score += (max_score * 0.1);
+    if (passed_ratio >= CORRECTNESS_THRESHOLD) {
+        if (submits <= 3) {
+            current_score += (max_score * 0.1);
+        }
+        var time_formula = max_score * 0.2 * Math.exp(-0.00256 * (total_time - time_left));
+        current_score += time_formula;
     }
-    var time_formula = max_score * 0.2 * Math.exp(-0.00256 * (total_time - time_left));
-    current_score += time_formula;
 
     return current_score;
 };
@@ -73,11 +78,13 @@ export const ScoreRound2 = (time_left, totalcases, passedcases, difficulty, win,
     if (win) {
         current_score += (max_score * 0.4);
     }
-    if (submits <= 3) {
-        current_score += (max_score * 0.1);
+    if (passed_ratio >= CORRECTNESS_THRESHOLD) {
+        if (submits <= 3) {
+            current_score += (max_score * 0.1);
+        }
+        var time_formula = max_score * 0.2 * Math.exp(-0.00256 * (total_time - time_left));
+        current_score += time_formula;
     }
-    var time_formula = max_score * 0.2 * Math.exp(-0.00256 * (total_time - time_left));
-    current_score += time_formula;
     if (iselite) {
         current_score *= 0.75;
     }
