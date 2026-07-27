@@ -463,22 +463,46 @@ export const round2Handler = (io, socket) => {
 
       const participantsData = await redis.hgetall(keys.participants);
       const players = Object.values(participantsData).map(p => JSON.parse(p));
+      
+      // 🐛 FIX: Fetch current scores from Prisma to sort players properly before role assignment
+      const userScores = await prisma.user.findMany({
+        where: { id: { in: players.map(p => p.id) } },
+        select: { id: true, eventScore: true }
+      });
+      
+      const scoreMap = new Map(userScores.map(u => [u.id, u.eventScore]));
+      
+      // Map scores and sort descending (highest score at index 0)
+      for (const p of players) {
+        p.eventScore = scoreMap.get(p.id) ?? 0;
+      }
+      players.sort((a, b) => b.eventScore - a.eventScore);
+
       const eliteCount = Math.ceil(players.length * 0.4);
       const multi = redis.multi();
       const dbUpdatePromises = [];
 
       for (let i = 0; i < players.length; i++) {
         const player = players[i];
-        const role = i < eliteCount ? "elite" : "challenger";
-        player.status = `${role}:idle`; player.role = role;
+        const role = i < eliteCount ? "elite" : "challenger"; // Top 40% are now guaranteed Elite
+        
+        player.status = `${role}:idle`; 
+        player.role = role;
+        
         multi.hset(keys.participants, player.id, JSON.stringify(player));
         multi.set(keys.role(player.id), role);
-        if (role === "elite") multi.sadd(keys.elites, player.id); else multi.sadd(keys.challengers, player.id);
+        
+        if (role === "elite") {
+            multi.sadd(keys.elites, player.id); 
+        } else {
+            multi.sadd(keys.challengers, player.id);
+        }
+        
         dbUpdatePromises.push(prisma.user.update({ where: { id: player.id }, data: { round2Role: role.toUpperCase() } }));
         io.to(`user:${player.id}`).emit("round2:rolesAssigned", { role });
       }
+      
       await Promise.all([multi.exec(), ...dbUpdatePromises]);
-
       await broadcastLobbyUpdate();
 
       // 🔑 Push canonical state to all participants after round start
