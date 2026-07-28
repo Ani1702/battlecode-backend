@@ -21,7 +21,7 @@ const router = express.Router();
 
 const JUDGE0_API_URL = process.env.JUDGE0_API_URL;
 const JUDGE0_API_KEY = null;
-const HARD_API_TIMEOUT_MS = 60_000; // 60 seconds
+const HARD_API_TIMEOUT_MS = 15_000; // 60 seconds
 const POLL_INTERVAL_MS = 1000;
 
 const LANGUAGE_ID_MAP = {
@@ -72,11 +72,16 @@ router.post("/run", async (req, res) => {
       return res.status(400).json({ error: "No sample test cases found" });
     }
 
-    const submissions = sampleTestCases.map((tc) => ({
+    const submissions = allTestCases.map((testCase, idx) => ({
       language_id,
       source_code,
-      stdin: tc.stdin || tc.input || "",
-      expected_output: tc.expected_output || tc.output || "",
+      stdin: testCase.stdin || testCase.input || "",
+      expected_output: testCase.expected_output || testCase.output || "",
+      index: idx,
+      cpu_time_limit: 2,
+      cpu_extra_time: 0.5,
+      wall_time_limit: 4,
+      memory_limit: 128000,
     }));
 
     const submissionResponse = await axios.post(
