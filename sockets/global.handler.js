@@ -179,6 +179,10 @@ export const globalHandler = (io, socket) => {
   socket.on("user:leaderboard", handleLeaderboardRequest);
   socket.on("user:current-round", handleCurrentRoundRequest);
   socket.on("user:broadcast", handleUserBroadcast);
+  socket.on("client:optimisticScore", (data) => {
+    console.log(`Optimistic score event received from ${socket.user.email}:`, data);
+    io.emit("client:optimisticScore", data);
+  });
   socket.on("global:violation", (payload, callback) => {
     console.log("came to listner");
     handleGlobalViolation(io, socket, payload, callback);
@@ -218,7 +222,7 @@ const getCurrentRound = async () => {
     }));
 
     return {
-      currentRoundNumber: currentRound?.roundNumber || 0,
+      currentRoundNumber: currentRound?.roundNumber ?? 0,
       currentRoundStatus: currentRound?.status || 'LOCKED',
       rounds: roundStatuses
     };
