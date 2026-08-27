@@ -47,6 +47,53 @@ const getRedisKeys = (userId = '', questionId = '', matchId = '') => ({
   challengerLock: (challengerId) => `r2:challenger:lock:${challengerId}`
 });
 
+// Maps userId -> { matchId, opponentId, opponentRole } for every player currently in match
+// so the elite vs challenger pairing can be attached to participant list payloads (admin dashboard).
+const getMatchPairingMap = async () => {
+  const keys = getRedisKeys();
+  const pairing = new Map();
+
+  try {
+    const participants = Object.values(await redis.hgetall(keys.participants)).map(p => JSON.parse(p));
+    for (const p of participants) {
+      const matchId = await redis.get(keys.userMatch(p.id));
+      if (matchId) {
+        const matchStr = await redis.get(keys.matchInfo(matchId));
+        if (matchStr) {
+          const match = JSON.parse(matchStr);
+          const opponentId = match.eliteId === p.id ? match.challengerId : match.eliteId;
+          const opponentRole = match.eliteId === p.id ? 'challenger' : 'elite';
+          pairing.set(p.id, { matchId, opponentId, opponentRole });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[R2 Pairing Map Error]', err);
+  }
+
+  return pairing;
+};
+
+// Enriches participant with match opponent info when in_match.
+const formatParticipant = (p, pairingMap, participantById) => {
+  const formatted = {
+    id: p.id,
+    username: p.username,
+    status: p.status,
+    role: p.role
+  };
+
+  const pairing = pairingMap.get(p.id);
+  if (p.status && p.status.includes('match') && pairing) {
+    formatted.matchId = pairing.matchId;
+    formatted.opponentId = pairing.opponentId;
+    formatted.opponentUsername = participantById.get(pairing.opponentId)?.username ?? null;
+    formatted.opponentRole = pairing.opponentRole;
+  }
+
+  return formatted;
+};
+
 const updatePlayerRole = async () => {
   try {
     // 1️⃣ Get all Round 2 participants
@@ -142,6 +189,9 @@ const broadcastLobbyUpdate = async () => {
       status = 'IN_PROGRESS';
     }
 
+    const pairingMap = await getMatchPairingMap();
+    const participantById = new Map(participantsList.map(p => [p.id, p]));
+
     // Categorize participants
     const byStatus = {
       lobby: [],
@@ -155,21 +205,22 @@ const broadcastLobbyUpdate = async () => {
 
     for (const p of participantsList) {
       const statusKey = p.status ? p.status.toLowerCase() : 'lobby';
+      const formatted = formatParticipant(p, pairingMap, participantById);
 
       if (statusKey.includes('idle')) {
-        byStatus.waiting.push(p);
+        byStatus.waiting.push(formatted);
       } else if (statusKey.includes('match')) {
-        byStatus.in_match.push(p);
+        byStatus.in_match.push(formatted);
       } else if (statusKey.includes('bounty')) {
-        byStatus.in_bounty.push(p);
+        byStatus.in_bounty.push(formatted);
       } else if (statusKey.includes('cooldown')) {
-        byStatus.cooldown.push(p);
+        byStatus.cooldown.push(formatted);
       } else if (statusKey.includes('finished') || statusKey.includes('completed')) {
-        byStatus.finished.push(p);
+        byStatus.finished.push(formatted);
       } else if (statusKey.includes('disconnected')) {
-        byStatus.disconnected.push(p);
+        byStatus.disconnected.push(formatted);
       } else {
-        byStatus.lobby.push(p);
+        byStatus.lobby.push(formatted);
       }
     }
 
@@ -188,7 +239,7 @@ const broadcastLobbyUpdate = async () => {
       participants: {
         total: participantsList.length,
         byStatus,
-        all: participantsList
+        all: participantsList.map(p => formatParticipant(p, pairingMap, participantById))
       },
       // Legacy fields for backward compatibility
       isRoundActive: isActive,
