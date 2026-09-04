@@ -21,8 +21,10 @@ const router = express.Router();
 
 const JUDGE0_API_URL = process.env.JUDGE0_API_URL;
 const JUDGE0_API_KEY = null;
-const HARD_API_TIMEOUT_MS = 60_000; // 60 seconds
-const POLL_INTERVAL_MS = 1000;
+const HARD_API_TIMEOUT_MS = 15_000; // 15 seconds max polling timeout
+const POLL_INTERVAL_MS = 500; // 500ms polling interval
+const CPU_TIME_LIMIT = 2.0; // 2.0s CPU time limit
+const WALL_TIME_LIMIT = 3.0; // 3.0s Wall time limit (terminates infinite loops instantly)
 
 const LANGUAGE_ID_MAP = {
   cpp: 105,
@@ -77,6 +79,9 @@ router.post("/run", async (req, res) => {
       source_code,
       stdin: tc.stdin || tc.input || "",
       expected_output: tc.expected_output || tc.output || "",
+      cpu_time_limit: CPU_TIME_LIMIT,
+      wall_time_limit: WALL_TIME_LIMIT,
+      max_processes_and_or_threads: 60,
     }));
 
     const submissionResponse = await axios.post(
@@ -93,7 +98,7 @@ router.post("/run", async (req, res) => {
         return res.status(200).json({
           success: false,
           error: "TIME_LIMIT_EXCEEDED",
-          meta: { timeoutSeconds: 60 },
+          meta: { timeoutSeconds: HARD_API_TIMEOUT_MS / 1000 },
         });
       }
 
@@ -262,6 +267,9 @@ router.post("/submit", verifyAuthToken, async (req, res) => {
       source_code,
       stdin: testCase.stdin || testCase.input || "",
       expected_output: testCase.expected_output || testCase.output || "",
+      cpu_time_limit: CPU_TIME_LIMIT,
+      wall_time_limit: WALL_TIME_LIMIT,
+      max_processes_and_or_threads: 60,
       index: idx,
     }));
 
@@ -315,15 +323,30 @@ router.post("/submit", verifyAuthToken, async (req, res) => {
     const passedCount = results.filter((r) => r.status?.id === 3).length;
     const totalCount = allTestCases.length;
 
-    /** ✅ FINAL STATUS RESOLUTION (DO NOT CHANGE ORDER) */
+    /** ✅ FINAL STATUS RESOLUTION */
     if (submissionStatus === "TIME_LIMIT_EXCEEDED") {
-      // already set
-    } else if (results.some((r) => r.compile_output)) {
-      submissionStatus = "COMPILATION_ERROR";
-    } else if (results.some((r) => r.stderr)) {
-      submissionStatus = "RUNTIME_ERROR";
-    } else if (results.some((r) => parseFloat(r.time) > 2.0)) {
+      // already set by hard timeout
+    } else if (
+      results.some(
+        (r) =>
+          r.status?.id === 5 ||
+          (r.time && parseFloat(r.time) >= CPU_TIME_LIMIT) ||
+          r.status?.description?.toLowerCase().includes("time limit exceeded")
+      )
+    ) {
       submissionStatus = "TIME_LIMIT_EXCEEDED";
+    } else if (
+      results.some((r) => r.status?.id === 6 || !!r.compile_output)
+    ) {
+      submissionStatus = "COMPILATION_ERROR";
+    } else if (
+      results.some(
+        (r) =>
+          r.status?.id >= 7 ||
+          (r.stderr && !r.status?.description?.toLowerCase().includes("time limit"))
+      )
+    ) {
+      submissionStatus = "RUNTIME_ERROR";
     } else if (passedCount === totalCount) {
       submissionStatus = "ACCEPTED";
     } else {
