@@ -289,7 +289,13 @@ export const round2Handler = (io, socket) => {
         if (loserParticipantStr) {
           const loserParticipant = JSON.parse(loserParticipantStr);
           if (loserParticipant.role === 'elite') {
-            await prisma.user.update({ where: { id: loserId }, data: { eventScore: { decrement: 2 } } });
+            // updateMany + gte guard keeps this atomic while flooring at 0 --
+            // a negative leaderboard score reads badly and also guarantees
+            // challenger status (and its 1.25x multiplier) as a side effect.
+            await prisma.user.updateMany({
+              where: { id: loserId, eventScore: { gte: 2 } },
+              data: { eventScore: { decrement: 2 } }
+            });
           }
         }
       }
@@ -1043,7 +1049,10 @@ export const round2Handler = (io, socket) => {
 
       const rejectCount = await redis.incr(keys.rejectCount(eliteId));
       if (rejectCount >= 3) {
-        await prisma.user.update({ where: { id: eliteId }, data: { eventScore: { decrement: 20 } } });
+        await prisma.user.updateMany({
+          where: { id: eliteId, eventScore: { gte: 20 } },
+          data: { eventScore: { decrement: 20 } }
+        });
         await redis.del(keys.rejectCount(eliteId));
         io.to(`user:${eliteId}`).emit('round2:info', { message: "You lost 20 points for rejecting 3 challenges." });
       }
@@ -1230,8 +1239,12 @@ export const round2Handler = (io, socket) => {
   socket.on("round2:challengeAccept", handleChallengeAccept);
   socket.on("round2:challengeReject", handleChallengeReject);
   socket.on("round2:reset", handleRound2Reset);
-  socket.on("round2:matchEnd", handleMatchEnd);
-  socket.on("round2:bountyend", handleBountyEnd);
+  // NOTE: handleMatchEnd/handleBountyEnd are intentionally NOT bound to client
+  // socket events. They are internal-only, invoked via matchEndHandler/
+  // bountyEndHandler (set below, exposed through getRound2Handlers()) after
+  // submit.routes.js validates a real correct submission, and internally from
+  // handleDisconnect. Binding them to socket.on let any client end a match or
+  // fabricate a bounty submission for any user with arbitrary results.
 
 };
 
