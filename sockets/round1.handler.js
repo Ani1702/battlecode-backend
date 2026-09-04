@@ -60,57 +60,12 @@ const getEnrichedParticipantsList = async () => {
   return participantsList;
 };
 
-// Maps userId -> { matchId, opponentId } for every player currently in_match,
-// so the 1v1 pairing can be attached to participant list payloads (admin dashboard etc).
-const getMatchPairingMap = async () => {
-  const keys = getRedisKeys();
-  const matches = await redis.hgetall(keys.matches);
-  const pairing = new Map();
-
-  for (const matchId in matches) {
-    const match = JSON.parse(matches[matchId]);
-    const [player1Id, player2Id] = match.players;
-    if (player1Id) pairing.set(player1Id, { matchId, opponentId: player2Id ?? null });
-    if (player2Id) pairing.set(player2Id, { matchId, opponentId: player1Id ?? null });
-  }
-
-  return pairing;
-};
-
-// Shared participant formatter used by both broadcastLobbyUpdate and
-// transformToUnifiedState, so both stay in sync and 1v1 matches surface
-// their pairing (matchId/opponentId/opponentUsername) consistently.
-const formatParticipant = (p, pairingMap, usernameById) => {
-  const formatted = {
-    userId: p.id,
-    username: p.username,
-    email: p.id,
-    status: p.status,
-    rank: p.rank,
-    eventScore: p.eventScore,
-    socketId: p.socketId,
-    cooldownEndTime: p.cooldownEndTime
-  };
-
-  const pairing = pairingMap.get(p.id);
-  if (p.status === 'in_match' && pairing) {
-    formatted.matchId = pairing.matchId;
-    formatted.opponentId = pairing.opponentId;
-    formatted.opponentUsername = usernameById.get(pairing.opponentId) ?? null;
-  }
-
-  return formatted;
-};
-
 const transformToUnifiedState = async (userId, allParticipants, socket = null) => {
   const keys = getRedisKeys();
   const currentUser = allParticipants.find(p => p.id === userId) || null;
   const currentStatus = await redis.get(keys.status);
   const startTimeStr = await redis.get(keys.startTime);
   const roundStartTime = startTimeStr ? parseInt(startTimeStr) : null;
-
-  const pairingMap = await getMatchPairingMap();
-  const usernameById = new Map(allParticipants.map(p => [p.id, p.username]));
 
   // Group participants by status
   const byStatus = {
@@ -125,7 +80,16 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
   allParticipants.forEach(p => {
     const status = p.status.replace('-', '_');
     if (byStatus[status]) {
-      byStatus[status].push(formatParticipant(p, pairingMap, usernameById));
+      byStatus[status].push({
+        userId: p.id,
+        username: p.username,
+        email: p.id,
+        status: p.status,
+        rank: p.rank,
+        eventScore: p.eventScore,
+        socketId: p.socketId,
+        cooldownEndTime: p.cooldownEndTime
+      });
     }
   });
 
@@ -153,7 +117,16 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
     participants: {
       total: allParticipants.length,
       byStatus,
-      all: allParticipants.map(p => formatParticipant(p, pairingMap, usernameById))
+      all: allParticipants.map(p => ({
+        userId: p.id,
+        username: p.username,
+        email: p.id,
+        status: p.status,
+        rank: p.rank,
+        eventScore: p.eventScore,
+        socketId: p.socketId,
+        cooldownEndTime: p.cooldownEndTime
+      }))
     },
 
     currentUser: currentUser ? {
@@ -225,9 +198,6 @@ const broadcastLobbyUpdate = async (io) => {
     const startTimeStr = await redis.get(keys.startTime);
     const roundStartTime = startTimeStr ? parseInt(startTimeStr) : null;
 
-    const pairingMap = await getMatchPairingMap();
-    const usernameById = new Map(participantsList.map(p => [p.id, p.username]));
-
     // Group participants by status
     const byStatus = {
       lobby: [],
@@ -241,7 +211,16 @@ const broadcastLobbyUpdate = async (io) => {
     participantsList.forEach(p => {
       const status = p.status.replace('-', '_');
       if (byStatus[status]) {
-        byStatus[status].push(formatParticipant(p, pairingMap, usernameById));
+        byStatus[status].push({
+          userId: p.id,
+          username: p.username,
+          email: p.id,
+          status: p.status,
+          rank: p.rank,
+          eventScore: p.eventScore,
+          socketId: p.socketId,
+          cooldownEndTime: p.cooldownEndTime
+        });
       }
     });
 
@@ -265,7 +244,16 @@ const broadcastLobbyUpdate = async (io) => {
       participants: {
         total: participantsList.length,
         byStatus,
-        all: participantsList.map(p => formatParticipant(p, pairingMap, usernameById))
+        all: participantsList.map(p => ({
+          userId: p.id,
+          username: p.username,
+          email: p.id,
+          status: p.status,
+          rank: p.rank,
+          eventScore: p.eventScore,
+          socketId: p.socketId,
+          cooldownEndTime: p.cooldownEndTime
+        }))
       }
     };
 
