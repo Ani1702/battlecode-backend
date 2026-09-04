@@ -1020,7 +1020,7 @@ export const round2Handler = (io, socket) => {
       for (const pId of [challengerId, eliteId]) {
         const pStr = await redis.hget(keys.participants, pId);
         const p = JSON.parse(pStr);
-        p.status = 'in-match';
+        p.status = 'in_match';
         await redis.hset(keys.participants, pId, JSON.stringify(p));
         await redis.set(keys.userMatch(pId), matchId);
       }
