@@ -102,21 +102,7 @@ router.patch('/rounds/:roundNumber/status', verifyAuthToken, requireAdmin, async
       });
     }
 
-    // Validate status transitions
     const currentStatus = currentRound.status;
-    const validTransitions = {
-      'LOCKED': ['LOBBY'],
-      'LOBBY': ['IN_PROGRESS', 'LOCKED'],
-      'IN_PROGRESS': ['COMPLETED', 'LOBBY'],
-      'COMPLETED': ['LOBBY'] // Allow reopening if needed
-    };
-
-    if (!validTransitions[currentStatus]?.includes(status)) {
-      return res.status(400).json({
-        success: false,
-        error: `Invalid transition from ${currentStatus} to ${status}`
-      });
-    }
 
     // Update round status
     const updatedRound = await prisma.round.update({

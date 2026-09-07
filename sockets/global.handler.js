@@ -197,16 +197,15 @@ const getCurrentRound = async () => {
       }
     });
 
-    // Find the current active round (IN_PROGRESS) or the next upcoming round (LOBBY)
-    let currentRound = rounds.find(r => r.status === 'IN_PROGRESS');
+    // Find active round (IN_PROGRESS) starting from highest round number down
+    let currentRound = rounds.slice().reverse().find(r => r.status === 'IN_PROGRESS');
 
     if (!currentRound) {
-      // If no round is in progress, find the next round in lobby state
-      currentRound = rounds.find(r => r.status === 'LOBBY');
+      // If no round is in progress, find upcoming round in lobby state (from highest)
+      currentRound = rounds.slice().reverse().find(r => r.status === 'LOBBY');
     }
 
     if (!currentRound) {
-
       currentRound = rounds.find(r => r.status === 'LOCKED');
     }
 

@@ -1,6 +1,6 @@
 import redis from "../config/redis.js";
 import prisma from "../config/prisma.js";
-import { broadcastLeaderboard } from "./global.handler.js";
+import { broadcastLeaderboard, getCurrentRound } from "./global.handler.js";
 // --- Constants ---
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -430,10 +430,15 @@ export const round2Handler = (io, socket) => {
   bountyEndHandler = handleBountyEnd;
 
   const handleLobbyJoin = async (payload, callback) => {
+    if (typeof payload === 'function') {
+      callback = payload;
+      payload = {};
+    }
+    const cb = typeof callback === 'function' ? callback : null;
     try {
       const userId = socket.user?.email;
       if (!userId) {
-        return callback?.({
+        return cb?.({
           success: false,
           message: "Authentication error.",
           roundNumber: 2,
@@ -460,7 +465,7 @@ export const round2Handler = (io, socket) => {
       if (participantStr) {
         console.debug(`[R2] User ${userId} already in lobby`);
         await broadcastLobbyUpdate();
-        return callback?.({
+        return cb?.({
           success: true,
           message: "Rejoined lobby.",
           roundNumber: 2,
@@ -471,7 +476,7 @@ export const round2Handler = (io, socket) => {
 
       const user = await prisma.user.findUnique({ where: { id: userId } });
       if (!user) {
-        return callback?.({
+        return cb?.({
           success: false,
           message: "User not found.",
           roundNumber: 2,
@@ -486,7 +491,7 @@ export const round2Handler = (io, socket) => {
       console.debug(`[R2] User ${userId} added to participants`);
       await broadcastLobbyUpdate();
 
-      callback?.({
+      cb?.({
         success: true,
         message: "Joined lobby successfully.",
         roundNumber: 2,
@@ -495,7 +500,7 @@ export const round2Handler = (io, socket) => {
       });
     } catch (err) {
       console.error("[R2] Error in handleLobbyJoin:", err);
-      callback?.({
+      cb?.({
         success: false,
         message: "Server error during join.",
         roundNumber: 2,
@@ -506,20 +511,29 @@ export const round2Handler = (io, socket) => {
   };
 
   const handleStart = async (payload, callback) => {
+    if (typeof payload === 'function') {
+      callback = payload;
+      payload = {};
+    }
+    const cb = typeof callback === 'function' ? callback : null;
     try {
       const adminUser = await prisma.user.findUnique({ where: { id: socket.user?.email } });
       if (adminUser?.role !== 'ADMIN') {
         console.error("[R2] Start failed: Not authorized");
-        return callback({ success: false, message: "Not authorized." });
+        return cb?.({ success: false, message: "Not authorized." });
       }
 
       await prisma.round.update({ where: { roundNumber: 2 }, data: { status: 'IN_PROGRESS' } });
+      await prisma.round.updateMany({
+        where: { roundNumber: { lt: 2 }, status: { in: ['LOBBY', 'IN_PROGRESS'] } },
+        data: { status: 'COMPLETED' }
+      });
 
       const endTime = Date.now() + ROUND_DURATION_MS;
       await redis.multi().set(keys.roundStarted, "true").set(keys.roundEndTime, endTime).exec();
 
       const participantsData = await redis.hgetall(keys.participants);
-      const players = Object.values(participantsData).map(p => JSON.parse(p));
+      const players = Object.values(participantsData || {}).map(p => JSON.parse(p));
       
       // 🐛 FIX: Fetch current scores from Prisma to sort players properly before role assignment
       const userScores = await prisma.user.findMany({
@@ -562,23 +576,36 @@ export const round2Handler = (io, socket) => {
       await Promise.all([multi.exec(), ...dbUpdatePromises]);
       await broadcastLobbyUpdate();
 
+      // Broadcast current round update to all connected sockets
+      try {
+        const currentRoundData = await getCurrentRound();
+        io.emit("server:currentRound", currentRoundData);
+      } catch (e) {
+        console.error("Error broadcasting current round on R2 start:", e);
+      }
+
       // 🔑 Push canonical state to all participants after round start
       for (const player of players) {
         io.to(`user:${player.id}`).emit("round2:getState");
       }
-      callback({ success: true });
+      cb?.({ success: true });
     } catch (err) {
       console.error("[R2] Error in handleStart:", err);
-      callback({ success: false, message: "Server error." });
+      cb?.({ success: false, message: "Server error." });
     }
   };
 
   const handleGetState = async (payload, callback) => {
+    if (typeof payload === 'function') {
+      callback = payload;
+      payload = {};
+    }
+    const cb = typeof callback === 'function' ? callback : null;
     try {
       const userId = socket.user?.email;
       if (!userId) {
         console.error("[R2] Get state failed: No userId");
-        socket.emit("round2:state", {
+        const authErrState = {
           success: false,
           error: "Authentication error.",
           timestamp: Date.now(),
@@ -605,7 +632,9 @@ export const round2Handler = (io, socket) => {
             all: []
           },
           currentUser: null
-        });
+        };
+        cb?.(authErrState);
+        socket.emit("round2:state", authErrState);
         return;
       }
 
@@ -763,8 +792,7 @@ export const round2Handler = (io, socket) => {
         isAttemptedByUser: userAttemptedSet.has(q.id)
       }));
 
-      // Emit unified state structure
-      socket.emit("round2:state", {
+      const stateResponse = {
         success: true,
         timestamp: Date.now(),
         roundNumber: 2,
@@ -790,11 +818,14 @@ export const round2Handler = (io, socket) => {
           bountyQuestions
         },
         message: 'State retrieved successfully'
-      });
+      };
+
+      cb?.(stateResponse);
+      socket.emit("round2:state", stateResponse);
 
     } catch (err) {
       console.error("[R2] Error in handleGetState:", err);
-      socket.emit("round2:state", {
+      const errorState = {
         success: false,
         error: "Server error fetching state.",
         timestamp: Date.now(),
@@ -821,7 +852,9 @@ export const round2Handler = (io, socket) => {
           all: []
         },
         currentUser: null
-      });
+      };
+      cb?.(errorState);
+      socket.emit("round2:state", errorState);
     }
   };
 
