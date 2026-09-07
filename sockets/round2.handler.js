@@ -47,6 +47,53 @@ const getRedisKeys = (userId = '', questionId = '', matchId = '') => ({
   challengerLock: (challengerId) => `r2:challenger:lock:${challengerId}`
 });
 
+// Maps userId -> { matchId, opponentId, opponentRole } for every player currently in match
+// so the elite vs challenger pairing can be attached to participant list payloads (admin dashboard).
+const getMatchPairingMap = async () => {
+  const keys = getRedisKeys();
+  const pairing = new Map();
+
+  try {
+    const participants = Object.values(await redis.hgetall(keys.participants)).map(p => JSON.parse(p));
+    for (const p of participants) {
+      const matchId = await redis.get(keys.userMatch(p.id));
+      if (matchId) {
+        const matchStr = await redis.get(keys.matchInfo(matchId));
+        if (matchStr) {
+          const match = JSON.parse(matchStr);
+          const opponentId = match.eliteId === p.id ? match.challengerId : match.eliteId;
+          const opponentRole = match.eliteId === p.id ? 'challenger' : 'elite';
+          pairing.set(p.id, { matchId, opponentId, opponentRole });
+        }
+      }
+    }
+  } catch (err) {
+    console.error('[R2 Pairing Map Error]', err);
+  }
+
+  return pairing;
+};
+
+// Enriches participant with match opponent info when in_match.
+const formatParticipant = (p, pairingMap, participantById) => {
+  const formatted = {
+    id: p.id,
+    username: p.username,
+    status: p.status,
+    role: p.role
+  };
+
+  const pairing = pairingMap.get(p.id);
+  if (p.status && p.status.includes('match') && pairing) {
+    formatted.matchId = pairing.matchId;
+    formatted.opponentId = pairing.opponentId;
+    formatted.opponentUsername = participantById.get(pairing.opponentId)?.username ?? null;
+    formatted.opponentRole = pairing.opponentRole;
+  }
+
+  return formatted;
+};
+
 const updatePlayerRole = async () => {
   try {
     // 1️⃣ Get all Round 2 participants
@@ -142,6 +189,9 @@ const broadcastLobbyUpdate = async () => {
       status = 'IN_PROGRESS';
     }
 
+    const pairingMap = await getMatchPairingMap();
+    const participantById = new Map(participantsList.map(p => [p.id, p]));
+
     // Categorize participants
     const byStatus = {
       lobby: [],
@@ -155,21 +205,22 @@ const broadcastLobbyUpdate = async () => {
 
     for (const p of participantsList) {
       const statusKey = p.status ? p.status.toLowerCase() : 'lobby';
+      const formatted = formatParticipant(p, pairingMap, participantById);
 
       if (statusKey.includes('idle')) {
-        byStatus.waiting.push(p);
+        byStatus.waiting.push(formatted);
       } else if (statusKey.includes('match')) {
-        byStatus.in_match.push(p);
+        byStatus.in_match.push(formatted);
       } else if (statusKey.includes('bounty')) {
-        byStatus.in_bounty.push(p);
+        byStatus.in_bounty.push(formatted);
       } else if (statusKey.includes('cooldown')) {
-        byStatus.cooldown.push(p);
+        byStatus.cooldown.push(formatted);
       } else if (statusKey.includes('finished') || statusKey.includes('completed')) {
-        byStatus.finished.push(p);
+        byStatus.finished.push(formatted);
       } else if (statusKey.includes('disconnected')) {
-        byStatus.disconnected.push(p);
+        byStatus.disconnected.push(formatted);
       } else {
-        byStatus.lobby.push(p);
+        byStatus.lobby.push(formatted);
       }
     }
 
@@ -188,7 +239,7 @@ const broadcastLobbyUpdate = async () => {
       participants: {
         total: participantsList.length,
         byStatus,
-        all: participantsList
+        all: participantsList.map(p => formatParticipant(p, pairingMap, participantById))
       },
       // Legacy fields for backward compatibility
       isRoundActive: isActive,
@@ -289,7 +340,13 @@ export const round2Handler = (io, socket) => {
         if (loserParticipantStr) {
           const loserParticipant = JSON.parse(loserParticipantStr);
           if (loserParticipant.role === 'elite') {
-            await prisma.user.update({ where: { id: loserId }, data: { eventScore: { decrement: 2 } } });
+            // updateMany + gte guard keeps this atomic while flooring at 0 --
+            // a negative leaderboard score reads badly and also guarantees
+            // challenger status (and its 1.25x multiplier) as a side effect.
+            await prisma.user.updateMany({
+              where: { id: loserId, eventScore: { gte: 2 } },
+              data: { eventScore: { decrement: 2 } }
+            });
           }
         }
       }
@@ -1047,7 +1104,7 @@ export const round2Handler = (io, socket) => {
       for (const pId of [challengerId, eliteId]) {
         const pStr = await redis.hget(keys.participants, pId);
         const p = JSON.parse(pStr);
-        p.status = 'in-match';
+        p.status = 'in_match';
         await redis.hset(keys.participants, pId, JSON.stringify(p));
         await redis.set(keys.userMatch(pId), matchId);
       }
@@ -1076,7 +1133,10 @@ export const round2Handler = (io, socket) => {
 
       const rejectCount = await redis.incr(keys.rejectCount(eliteId));
       if (rejectCount >= 3) {
-        await prisma.user.update({ where: { id: eliteId }, data: { eventScore: { decrement: 20 } } });
+        await prisma.user.updateMany({
+          where: { id: eliteId, eventScore: { gte: 20 } },
+          data: { eventScore: { decrement: 20 } }
+        });
         await redis.del(keys.rejectCount(eliteId));
         io.to(`user:${eliteId}`).emit('round2:info', { message: "You lost 20 points for rejecting 3 challenges." });
       }
@@ -1263,8 +1323,12 @@ export const round2Handler = (io, socket) => {
   socket.on("round2:challengeAccept", handleChallengeAccept);
   socket.on("round2:challengeReject", handleChallengeReject);
   socket.on("round2:reset", handleRound2Reset);
-  socket.on("round2:matchEnd", handleMatchEnd);
-  socket.on("round2:bountyend", handleBountyEnd);
+  // NOTE: handleMatchEnd/handleBountyEnd are intentionally NOT bound to client
+  // socket events. They are internal-only, invoked via matchEndHandler/
+  // bountyEndHandler (set below, exposed through getRound2Handlers()) after
+  // submit.routes.js validates a real correct submission, and internally from
+  // handleDisconnect. Binding them to socket.on let any client end a match or
+  // fabricate a bounty submission for any user with arbitrary results.
 
 };
 

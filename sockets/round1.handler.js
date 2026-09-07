@@ -32,9 +32,12 @@ const getRedisKeys = () => ({
 
 const getEnrichedParticipantsList = async () => {
   const keys = getRedisKeys();
-  const allParticipantsData = await redis.hgetall(keys.participants);
+  const [allParticipantsData, allMatchesData] = await Promise.all([
+    redis.hgetall(keys.participants),
+    redis.hgetall(keys.matches)
+  ]);
 
-  if (Object.keys(allParticipantsData).length === 0) {
+  if (!allParticipantsData || Object.keys(allParticipantsData).length === 0) {
     return [];
   }
 
@@ -49,15 +52,75 @@ const getEnrichedParticipantsList = async () => {
   const rankMap = new Map(usersFromDb.map((u, i) => [u.id, i + 1]));
   const usernameMap = new Map(usersFromDb.map(u => [u.id, u.username]));
 
+  const opponentMap = new Map();
+  Object.values(allMatchesData || {}).forEach(matchStr => {
+    try { // NEW: Try/Catch prevents crashes from corrupted JSON
+      const match = JSON.parse(matchStr);
+      if (match?.players?.length === 2) {
+        opponentMap.set(match.players[0], match.players[1]);
+        opponentMap.set(match.players[1], match.players[0]);
+      }
+    } catch (e) {} 
+  });
+
   const participantsList = Object.values(allParticipantsData).map(pStr => {
-    const p = JSON.parse(pStr);
-    p.eventScore = scoreMap.get(p.id) ?? p.eventScore ?? 0;
-    p.rank = rankMap.get(p.id) ?? 999;
-    p.username = usernameMap.get(p.id) ?? p.username;
-    return p;
-  }).sort((a, b) => a.rank - b.rank);
+    try { // NEW: Safety check for participant data
+      const p = JSON.parse(pStr);
+      p.eventScore = scoreMap.get(p.id) ?? p.eventScore ?? 0;
+      p.rank = rankMap.get(p.id) ?? 999;
+      p.username = usernameMap.get(p.id) ?? p.username;
+
+      const opponentId = opponentMap.get(p.id);
+      if (opponentId) {
+        p.opponentUsername = usernameMap.get(opponentId) || opponentId;
+      }
+      return p;
+    } catch (e) { return null; }
+  }).filter(Boolean).sort((a, b) => a.rank - b.rank);
 
   return participantsList;
+};
+
+// Maps userId -> { matchId, opponentId } for every player currently in_match,
+// so the 1v1 pairing can be attached to participant list payloads (admin dashboard etc).
+const getMatchPairingMap = async () => {
+  const keys = getRedisKeys();
+  const matches = await redis.hgetall(keys.matches);
+  const pairing = new Map();
+
+  for (const matchId in matches) {
+    const match = JSON.parse(matches[matchId]);
+    const [player1Id, player2Id] = match.players;
+    if (player1Id) pairing.set(player1Id, { matchId, opponentId: player2Id ?? null });
+    if (player2Id) pairing.set(player2Id, { matchId, opponentId: player1Id ?? null });
+  }
+
+  return pairing;
+};
+
+// Shared participant formatter used by both broadcastLobbyUpdate and
+// transformToUnifiedState, so both stay in sync and 1v1 matches surface
+// their pairing (matchId/opponentId/opponentUsername) consistently.
+const formatParticipant = (p, pairingMap, usernameById) => {
+  const formatted = {
+    userId: p.id,
+    username: p.username,
+    email: p.id,
+    status: p.status,
+    rank: p.rank,
+    eventScore: p.eventScore,
+    socketId: p.socketId,
+    cooldownEndTime: p.cooldownEndTime
+  };
+
+  const pairing = pairingMap.get(p.id);
+  if (p.status === 'in_match' && pairing) {
+    formatted.matchId = pairing.matchId;
+    formatted.opponentId = pairing.opponentId;
+    formatted.opponentUsername = usernameById.get(pairing.opponentId) ?? null;
+  }
+
+  return formatted;
 };
 
 const transformToUnifiedState = async (userId, allParticipants, socket = null) => {
@@ -66,6 +129,9 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
   const currentStatus = await redis.get(keys.status);
   const startTimeStr = await redis.get(keys.startTime);
   const roundStartTime = startTimeStr ? parseInt(startTimeStr) : null;
+
+  const pairingMap = await getMatchPairingMap();
+  const usernameById = new Map(allParticipants.map(p => [p.id, p.username]));
 
   // Group participants by status
   const byStatus = {
@@ -80,16 +146,7 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
   allParticipants.forEach(p => {
     const status = p.status.replace('-', '_');
     if (byStatus[status]) {
-      byStatus[status].push({
-        userId: p.id,
-        username: p.username,
-        email: p.id,
-        status: p.status,
-        rank: p.rank,
-        eventScore: p.eventScore,
-        socketId: p.socketId,
-        cooldownEndTime: p.cooldownEndTime
-      });
+      byStatus[status].push(formatParticipant(p, pairingMap, usernameById));
     }
   });
 
@@ -117,16 +174,7 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
     participants: {
       total: allParticipants.length,
       byStatus,
-      all: allParticipants.map(p => ({
-        userId: p.id,
-        username: p.username,
-        email: p.id,
-        status: p.status,
-        rank: p.rank,
-        eventScore: p.eventScore,
-        socketId: p.socketId,
-        cooldownEndTime: p.cooldownEndTime
-      }))
+      all: allParticipants.map(p => formatParticipant(p, pairingMap, usernameById))
     },
 
     currentUser: currentUser ? {
@@ -198,6 +246,9 @@ const broadcastLobbyUpdate = async (io) => {
     const startTimeStr = await redis.get(keys.startTime);
     const roundStartTime = startTimeStr ? parseInt(startTimeStr) : null;
 
+    const pairingMap = await getMatchPairingMap();
+    const usernameById = new Map(participantsList.map(p => [p.id, p.username]));
+
     // Group participants by status
     const byStatus = {
       lobby: [],
@@ -209,18 +260,9 @@ const broadcastLobbyUpdate = async (io) => {
     };
 
     participantsList.forEach(p => {
-      const status = p.status.replace('-', '_');
+      const status = (p.status || 'lobby').replace('-', '_');
       if (byStatus[status]) {
-        byStatus[status].push({
-          userId: p.id,
-          username: p.username,
-          email: p.id,
-          status: p.status,
-          rank: p.rank,
-          eventScore: p.eventScore,
-          socketId: p.socketId,
-          cooldownEndTime: p.cooldownEndTime
-        });
+        byStatus[status].push(formatParticipant(p, pairingMap, usernameById));
       }
     });
 
@@ -244,16 +286,7 @@ const broadcastLobbyUpdate = async (io) => {
       participants: {
         total: participantsList.length,
         byStatus,
-        all: participantsList.map(p => ({
-          userId: p.id,
-          username: p.username,
-          email: p.id,
-          status: p.status,
-          rank: p.rank,
-          eventScore: p.eventScore,
-          socketId: p.socketId,
-          cooldownEndTime: p.cooldownEndTime
-        }))
+        all: participantsList.map(p => formatParticipant(p, pairingMap, usernameById))
       }
     };
 
@@ -498,10 +531,7 @@ export const handleMatchForfeit = async (io, forfeitingUserId) => {
 
 export const round1AdminAddUser = async (io, userId, forceAdd = false) => {
   try {
-    if (!userId) {
-      io.emit("admin:error", { error: "Invalid user email" });
-      return;
-    }
+    if (!userId) throw new Error("Invalid user email provided.");
 
     const keys = getRedisKeys();
 
@@ -510,44 +540,29 @@ export const round1AdminAddUser = async (io, userId, forceAdd = false) => {
       select: { id: true, username: true, eventScore: true }
     });
 
-    if (!user) {
-      io.emit("admin:error", { error: "User not found" });
-      return;
-    }
+    // FIX: Actually throw an error so the frontend knows it failed!
+    if (!user) throw new Error(`User ${userId} not found in database! Double-check for typos.`);
 
-    if (await redis.get(keys.status) === "ended") {
-      io.emit("admin:error", { error: "Round already ended" });
-      return;
-    }
-
-    // Only check "running" status if not forcing the add
     const roundStatus = await redis.get(keys.status);
-    if (!forceAdd && roundStatus === "running") {
-      io.emit("admin:error", { error: "Round is in progress" });
-      return;
-    }
+    if (roundStatus === "ended") throw new Error("Round already ended.");
+    if (!forceAdd && roundStatus === "running") throw new Error("Round is in progress.");
 
     const existing = await redis.hget(keys.participants, userId);
     if (existing) {
       io.to(`user:${userId}`).emit("round1:adminAdded");
-      return;
+      return; 
     }
 
     const participant = {
       id: userId,
       socketId: null,
       username: user.username,
-      rank: null,            // rank will be enriched later
+      rank: null,
       eventScore: user.eventScore,
       status: roundStatus === "running" ? "waiting" : "lobby"
     };
 
-    await redis.hset(
-      keys.participants,
-      userId,
-      JSON.stringify(participant)
-    );
-
+    await redis.hset(keys.participants, userId, JSON.stringify(participant));
     await broadcastLobbyUpdate(io);
 
     io.to(`user:${userId}`).emit("round1:adminAdded");
@@ -555,7 +570,8 @@ export const round1AdminAddUser = async (io, userId, forceAdd = false) => {
 
   } catch (err) {
     console.error("[Admin Add User R1]", err);
-    io.emit("admin:error", { error: "Failed to add user" });
+    // CRITICAL FIX: Re-throw the error so admin.handler.js catches it!
+    throw err; 
   }
 };
 
