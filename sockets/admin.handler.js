@@ -275,11 +275,10 @@ export const handleQualifyRound3 = async (io, payload, callback) => {
       return callback?.({ success: false, error: "Invalid count" });
     }
 
-    // 1. Fetch users by leaderboard (Safely exclude ADMINs)
+    // 1. Fetch users by leaderboard (Grabs EVERYONE for testing, including admins)
     const users = await prisma.user.findMany({
-      where: {
-        role: { not: 'ADMIN' }, // Fix: Grabs all players even if role is null
-      },
+      // The 'where' clause is completely removed! 
+      // Now it just ranks every single user in the DB by score.
       orderBy: { eventScore: "desc" },
       select: { id: true }
     });
