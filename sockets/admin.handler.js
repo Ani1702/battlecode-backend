@@ -275,10 +275,10 @@ export const handleQualifyRound3 = async (io, payload, callback) => {
       return callback?.({ success: false, error: "Invalid count" });
     }
 
-    // 1. Fetch users by leaderboard
+    // 1. Fetch users by leaderboard (Safely exclude ADMINs)
     const users = await prisma.user.findMany({
       where: {
-        role: 'PLAYER',
+        role: { not: 'ADMIN' }, // Fix: Grabs all players even if role is null
       },
       orderBy: { eventScore: "desc" },
       select: { id: true }
@@ -287,17 +287,30 @@ export const handleQualifyRound3 = async (io, payload, callback) => {
     const qualifiedIds = users.slice(0, count).map(u => u.id);
     const disqualifiedIds = users.slice(count).map(u => u.id);
 
-    // 2. Update DB
-    await prisma.$transaction([
-      prisma.user.updateMany({
-        where: { id: { in: qualifiedIds } },
-        data: { qualifiedForR3: true }
-      }),
-      prisma.user.updateMany({
-        where: { id: { in: disqualifiedIds } },
-        data: { qualifiedForR3: false }
-      })
-    ]);
+    // 2. Safely Update DB (Prevents Prisma from crashing on empty arrays)
+    const transactions = [];
+
+    if (qualifiedIds.length > 0) {
+      transactions.push(
+        prisma.user.updateMany({
+          where: { id: { in: qualifiedIds } },
+          data: { qualifiedForR3: true }
+        })
+      );
+    }
+
+    if (disqualifiedIds.length > 0) {
+      transactions.push(
+        prisma.user.updateMany({
+          where: { id: { in: disqualifiedIds } },
+          data: { qualifiedForR3: false }
+        })
+      );
+    }
+
+    if (transactions.length > 0) {
+      await prisma.$transaction(transactions);
+    }
 
     // 3. Notify admin + users
     io.emit("admin:qualificationUpdated", {
