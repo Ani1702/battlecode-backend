@@ -28,7 +28,9 @@ import prisma from "../config/prisma.js";
  * - round0:user:{userId} - User presence
  */
 
-const ROUND_DURATION = 20 * 60;
+const SECOND = 1000;
+const MINUTE = 60 * SECOND;
+const ROUND_DURATION_MS = 20 * MINUTE; // 20 minutes
 const ROUND_NUMBER = 0;
 
 let globalRoundState = {
@@ -120,8 +122,8 @@ const broadcastLobbyUpdate = async (io) => {
     // Calculate remaining time
     let timeRemaining = 0;
     if (globalRoundState.isActive && globalRoundState.startTime) {
-      const elapsed = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-      timeRemaining = Math.max(ROUND_DURATION - elapsed, 0);
+      const elapsed = (Date.now() - globalRoundState.startTime);
+      timeRemaining = Math.max(ROUND_DURATION_MS - elapsed, 0);
     }
 
     io.to('round0').emit('lobby:round0', {
@@ -155,8 +157,8 @@ export const round0Handler = (io, socket) => {
 
     globalRoundState.timerInterval = setInterval(async () => {
       try {
-        const elapsed = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-        const timeRemaining = ROUND_DURATION - elapsed;
+        const elapsed = (Date.now() - globalRoundState.startTime);
+        const timeRemaining = ROUND_DURATION_MS - elapsed;
 
         if (timeRemaining <= 0) {
           clearInterval(globalRoundState.timerInterval);
@@ -173,7 +175,7 @@ export const round0Handler = (io, socket) => {
 
           io.to('round0').emit('round0:end', {
             message: 'Round 0 has ended!',
-            duration: ROUND_DURATION,
+            duration: ROUND_DURATION_MS,
             totalParticipants: globalRoundState.participants.size
           });
 
@@ -189,7 +191,7 @@ export const round0Handler = (io, socket) => {
           io.to('round0').emit('round0:timer', {
             timeRemaining,
             elapsed,
-            duration: ROUND_DURATION
+            duration: ROUND_DURATION_MS
           });
         }
       } catch (error) {
@@ -207,9 +209,9 @@ export const round0Handler = (io, socket) => {
       if (timerRaw && problemsRaw) {
         const startTime = parseInt(timerRaw);
         const problems = JSON.parse(problemsRaw);
-        const elapsed = Math.floor((Date.now() - startTime) / 1000);
+        const elapsed = (Date.now() - startTime);
 
-        if (elapsed < ROUND_DURATION) {
+        if (elapsed < ROUND_DURATION_MS) {
           globalRoundState.isActive = true;
           globalRoundState.startTime = startTime;
           globalRoundState.problems = problems;
@@ -542,7 +544,7 @@ export const round0Handler = (io, socket) => {
       // Step 8: Emit round start to all participants
       io.to('round0').emit('round0:start', {
         problems,
-        duration: ROUND_DURATION,
+        duration: ROUND_DURATION_MS,
         startTime: startTime,
         message: 'Round 0 has started! Good luck!'
       });
@@ -553,7 +555,7 @@ export const round0Handler = (io, socket) => {
         success: true,
         message: `Round 0 started with ${problems.length} problems`,
         problems,
-        duration: ROUND_DURATION
+        duration: ROUND_DURATION_MS
       });
 
     } catch (error) {
@@ -689,8 +691,8 @@ export const round0Handler = (io, socket) => {
       }
 
       // Step 6: Calculate remaining time
-      const elapsed = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-      const timeRemaining = Math.max(ROUND_DURATION - elapsed, 0);
+      const elapsed = (Date.now() - globalRoundState.startTime);
+      const timeRemaining = Math.max(ROUND_DURATION_MS - elapsed, 0);
 
       console.log(`User ${userId} moved to problem ${userState.currentProblemIndex + 1}`);
 
@@ -807,8 +809,8 @@ export const round0Handler = (io, socket) => {
       const userProgress = userProgressRaw ? JSON.parse(userProgressRaw) : {};
 
       // Calculate remaining time
-      const elapsed = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-      const timeRemaining = Math.max(ROUND_DURATION - elapsed, 0);
+      const elapsed = (Date.now() - globalRoundState.startTime);
+      const timeRemaining = Math.max(ROUND_DURATION_MS - elapsed, 0);
 
       // Update participant status to reconnected
       const participantRaw = await redis.hget(keys.lobby, userId);
@@ -859,7 +861,7 @@ export const round0Handler = (io, socket) => {
             startTime: null,
             endTime: null,
             timeRemaining: 0,
-            duration: ROUND_DURATION
+            duration: ROUND_DURATION_MS
           },
           participants: {
             total: 0,
@@ -900,7 +902,7 @@ export const round0Handler = (io, socket) => {
             startTime: null,
             endTime: null,
             timeRemaining: 0,
-            duration: ROUND_DURATION
+            duration: ROUND_DURATION_MS
           },
           participants: {
             total: 0,
@@ -935,8 +937,8 @@ export const round0Handler = (io, socket) => {
       // Calculate timeRemaining
       let timeRemaining = 0;
       if (globalRoundState.isActive && globalRoundState.startTime) {
-        const elapsed = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-        timeRemaining = Math.max(ROUND_DURATION - elapsed, 0);
+        const elapsed = (Date.now() - globalRoundState.startTime);
+        timeRemaining = Math.max(ROUND_DURATION_MS - elapsed, 0);
       }
 
       // Group participants by status
@@ -956,8 +958,8 @@ export const round0Handler = (io, socket) => {
 
         // Recalculate timeRemaining after sync
         if (globalRoundState.isActive && globalRoundState.startTime) {
-          const elapsed = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-          timeRemaining = Math.max(ROUND_DURATION - elapsed, 0);
+          const elapsed = (Date.now() - globalRoundState.startTime);
+          timeRemaining = Math.max(ROUND_DURATION_MS - elapsed, 0);
         }
       }
 
@@ -971,9 +973,9 @@ export const round0Handler = (io, socket) => {
             isActive: false,
             status: round0DB.status,
             startTime: globalRoundState.startTime,
-            endTime: globalRoundState.startTime ? globalRoundState.startTime + (ROUND_DURATION * 1000) : null,
+            endTime: globalRoundState.startTime ? globalRoundState.startTime + (ROUND_DURATION_MS) : null,
             timeRemaining: 0,
-            duration: ROUND_DURATION
+            duration: ROUND_DURATION_MS
           },
           participants: {
             total: allParticipants.length,
@@ -999,9 +1001,9 @@ export const round0Handler = (io, socket) => {
             isActive: true,
             status: 'IN_PROGRESS',
             startTime: globalRoundState.startTime,
-            endTime: globalRoundState.startTime + (ROUND_DURATION * 1000),
+            endTime: globalRoundState.startTime + (ROUND_DURATION_MS),
             timeRemaining,
-            duration: ROUND_DURATION
+            duration: ROUND_DURATION_MS
           },
           participants: {
             total: allParticipants.length,
@@ -1025,8 +1027,8 @@ export const round0Handler = (io, socket) => {
       };
 
       // Recalculate timeRemaining for user with active state
-      const elapsedTime = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-      timeRemaining = Math.max(ROUND_DURATION - elapsedTime, 0);
+      const elapsedTime = (Date.now() - globalRoundState.startTime);
+      timeRemaining = Math.max(ROUND_DURATION_MS - elapsedTime, 0);
 
       // Return full match state
       io.emit('round0:state', {
@@ -1037,9 +1039,9 @@ export const round0Handler = (io, socket) => {
           isActive: true,
           status: 'IN_PROGRESS',
           startTime: globalRoundState.startTime,
-          endTime: globalRoundState.startTime + (ROUND_DURATION * 1000),
+          endTime: globalRoundState.startTime + (ROUND_DURATION_MS),
           timeRemaining,
-          duration: ROUND_DURATION
+          duration: ROUND_DURATION_MS
         },
         participants: {
           total: allParticipants.length,
@@ -1051,7 +1053,7 @@ export const round0Handler = (io, socket) => {
           type: 'problem',
           id: `round0-${userId}`,
           startTime: globalRoundState.startTime,
-          endTime: globalRoundState.startTime + (ROUND_DURATION * 1000),
+          endTime: globalRoundState.startTime + (ROUND_DURATION_MS),
           timeRemaining,
           problem: userState.problems[userState.currentProblemIndex],
           problems: userState.problems,
@@ -1077,7 +1079,7 @@ export const round0Handler = (io, socket) => {
           startTime: null,
           endTime: null,
           timeRemaining: 0,
-          duration: ROUND_DURATION
+          duration: ROUND_DURATION_MS
         },
         participants: {
           total: 0,
@@ -1350,8 +1352,8 @@ export const getRound0Status = async () => {
 
     let timeRemaining = 0;
     if (globalRoundState.isActive && globalRoundState.startTime) {
-      const elapsed = Math.floor((Date.now() - globalRoundState.startTime) / 1000);
-      timeRemaining = Math.max(ROUND_DURATION - elapsed, 0);
+      const elapsed = (Date.now() - globalRoundState.startTime);
+      timeRemaining = Math.max(ROUND_DURATION_MS - elapsed, 0);
     }
 
     return {
@@ -1359,7 +1361,7 @@ export const getRound0Status = async () => {
       participants,
       totalParticipants: participants.length,
       timeRemaining,
-      duration: ROUND_DURATION
+      duration: ROUND_DURATION_MS
     };
   } catch (error) {
     console.error('Error getting Round 0 status:', error);
@@ -1368,7 +1370,7 @@ export const getRound0Status = async () => {
       participants: [],
       totalParticipants: 0,
       timeRemaining: 0,
-      duration: ROUND_DURATION
+      duration: ROUND_DURATION_MS
     };
   }
 };

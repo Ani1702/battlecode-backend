@@ -501,18 +501,20 @@ if (submissionStatus === "TIME_LIMIT_EXCEEDED") {
           }
         }
 
-        const difficultyTimeMap = {
-          R1_EASY: 15 * 60,
-          R1_MEDIUM: 20 * 60,
-          R1_HARD: 25 * 60,
+        const difficultyTimeMapMs = {
+          R1_EASY: 15 * 60 * 1000,
+          R1_MEDIUM: 20 * 60 * 1000,
+          R1_HARD: 25 * 60 * 1000,
         };
-        const totalTimeInSeconds = difficultyTimeMap[problem.difficulty] || 0;
-        const elapsedTimeInSeconds =
-          (submitReceivedAt - activeMatch.startTime) / 1000;
-        const timeLeftInSeconds = Math.max(
-          0,
-          totalTimeInSeconds - elapsedTimeInSeconds
-        );
+        const matchEndTime =
+          activeMatch.endTime ??
+          (activeMatch.startTime
+            ? activeMatch.startTime + (activeMatch.duration || difficultyTimeMapMs[problem.difficulty] || 0)
+            : null);
+        // ScoreRound1's decay curve is calibrated in seconds.
+        const timeLeftInSeconds = matchEndTime
+          ? Math.max(0, (matchEndTime - submitReceivedAt) / 1000)
+          : 0;
 
         calculatedScore = ScoreRound1(
           timeLeftInSeconds,

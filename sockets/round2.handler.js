@@ -10,8 +10,8 @@ const HOUR = 60 * MINUTE;
 const ROUND_DURATION_MS = 1 * HOUR;        // 90 minutes total round window
 const MATCH_DURATION_MS = 25 * MINUTE;       // 25 minutes per match
 
-const COOLDOWN_DURATION_S = 30;              // 30 seconds
-const CHALLENGE_REQUEST_EXPIRY_S = 60;       // 1 minute
+const COOLDOWN_DURATION_MS = 30 * SECOND;              // 30 seconds
+const CHALLENGE_REQUEST_EXPIRY_MS = 60 * SECOND;       // 1 minute
 const ACTION_LOCK_MS = 1 * MINUTE;            // 1 minute
 const DISCONNECT_GRACE_PERIOD_MS = 15 * SECOND; // 15 seconds
 
@@ -376,8 +376,8 @@ export const round2Handler = (io, socket) => {
           p.status = `${p.role}:idle`;
           await redis.hset(keys.participants, pId, JSON.stringify(p));
         }
-        await redis.set(keys.cooldown(pId), "true", "EX", COOLDOWN_DURATION_S);
-        io.to(`user:${pId}`).emit("round2:cooldown", { duration: COOLDOWN_DURATION_S });
+        await redis.set(keys.cooldown(pId), "true", "EX", Math.ceil(COOLDOWN_DURATION_MS / 1000));
+        io.to(`user:${pId}`).emit("round2:cooldown", { duration: COOLDOWN_DURATION_MS });
       }
 
       await redis.del(keys.userMatch(challengerId), keys.userMatch(eliteId), matchKey);
@@ -988,7 +988,7 @@ export const round2Handler = (io, socket) => {
       if (challengerCooldown || eliteCooldown) return callback?.({ success: false, message: "One or both players are in cooldown." });
 
       const requestKey = keys.challengeRequest(challengerId, eliteId);
-      if (!(await redis.set(requestKey, "true", "EX", CHALLENGE_REQUEST_EXPIRY_S, "NX"))) return callback?.({ success: false, message: "Request already sent." });
+      if (!(await redis.set(requestKey, "true", "EX", Math.ceil(CHALLENGE_REQUEST_EXPIRY_MS / 1000), "NX"))) return callback?.({ success: false, message: "Request already sent." });
 
       await redis.multi().sadd(keys.pendingRequests(eliteId), challengerId).sadd(keys.outgoingRequests(challengerId), eliteId).exec();
 
@@ -1004,10 +1004,10 @@ export const round2Handler = (io, socket) => {
             io.to(`user:${challengerId}`).emit("round2:challengeExpired", { eliteId, reason: "Request timed out." });
           }
         } catch (err) { console.error(`Error in request expiry for ${requestKey}:`, err); }
-      }, CHALLENGE_REQUEST_EXPIRY_S * 1000);
+      }, CHALLENGE_REQUEST_EXPIRY_MS);
       requestTimeouts.set(requestKey, timeoutId);
 
-      io.to(`user:${eliteId}`).emit("round2:challengeIncoming", { challenger: challengerP, expiresAt: Date.now() + CHALLENGE_REQUEST_EXPIRY_S * 1000 });
+      io.to(`user:${eliteId}`).emit("round2:challengeIncoming", { challenger: challengerP, expiresAt: Date.now() + CHALLENGE_REQUEST_EXPIRY_MS });
       callback?.({ success: true, message: "Challenge request sent." });
       await broadcastDashboardUpdates();
     } catch (err) {

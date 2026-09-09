@@ -6,13 +6,18 @@ import { broadcastLeaderboard } from "./global.handler.js";
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
 
-// Game constants
-const ROUND_DURATION = 60 * MINUTE;        // 1 hour
+// Game constants (all durations in ms)
+const ROUND_DURATION_MS = 60 * MINUTE;        // 1 hour
 const ROUND_NUMBER = 1;
-const MATCHMAKING_INTERVAL = 3 * MINUTE;
-const COOLDOWN_DURATION = 30 * SECOND;
-const JANITOR_INTERVAL = 5 * SECOND;
-const LOBBY_UPDATE_INTERVAL = 5 * SECOND;
+const MATCHMAKING_INTERVAL_MS = 3 * MINUTE;
+const COOLDOWN_DURATION_MS = 30 * SECOND;
+const JANITOR_INTERVAL_MS = 5 * SECOND;
+const LOBBY_UPDATE_INTERVAL_MS = 5 * SECOND;
+const MATCH_DURATION_MS = {
+  R1_HARD: 25 * MINUTE,
+  R1_MEDIUM: 20 * MINUTE,
+  R1_EASY: 15 * MINUTE,
+};
 
 // Global round management variables
 let globalTimer = null;
@@ -28,7 +33,25 @@ const getRedisKeys = () => ({
   matches: `round${ROUND_NUMBER}:matches`,
   status: `round${ROUND_NUMBER}:status`,
   startTime: `round${ROUND_NUMBER}:status:startTime`,
+  endTime: `round${ROUND_NUMBER}:status:endTime`,
 });
+
+const remainingMs = (endTime) => (endTime ? Math.max(0, endTime - Date.now()) : 0);
+
+const resolveRoundTimes = (startTimeStr, endTimeStr, status) => {
+  const startTime = startTimeStr ? parseInt(startTimeStr) : null;
+  const endTime = endTimeStr
+    ? parseInt(endTimeStr)
+    : (startTime ? startTime + ROUND_DURATION_MS : null);
+  return {
+    startTime,
+    endTime,
+    timeRemaining: status === "running" ? remainingMs(endTime) : 0,
+  };
+};
+
+const resolveMatchEndTime = (match) =>
+  match.endTime ?? (match.startTime && match.duration ? match.startTime + match.duration : null);
 
 const getEnrichedParticipantsList = async () => {
   const keys = getRedisKeys();
@@ -126,9 +149,13 @@ const formatParticipant = (p, pairingMap, usernameById) => {
 const transformToUnifiedState = async (userId, allParticipants, socket = null) => {
   const keys = getRedisKeys();
   const currentUser = allParticipants.find(p => p.id === userId) || null;
-  const currentStatus = await redis.get(keys.status);
-  const startTimeStr = await redis.get(keys.startTime);
-  const roundStartTime = startTimeStr ? parseInt(startTimeStr) : null;
+  const [currentStatus, startTimeStr, endTimeStr] = await Promise.all([
+    redis.get(keys.status),
+    redis.get(keys.startTime),
+    redis.get(keys.endTime),
+  ]);
+  const { startTime: roundStartTime, endTime: roundEndTime, timeRemaining: globalTimeRemaining } =
+    resolveRoundTimes(startTimeStr, endTimeStr, currentStatus);
 
   const pairingMap = await getMatchPairingMap();
   const usernameById = new Map(allParticipants.map(p => [p.id, p.username]));
@@ -150,11 +177,6 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
     }
   });
 
-  // Calculate time remaining
-  const globalTimeRemaining = roundStartTime
-    ? Math.max(0, Math.floor((ROUND_DURATION - (Date.now() - roundStartTime)) / 1000))
-    : 0;
-
   // Base state
   const unifiedState = {
     success: true,
@@ -166,9 +188,9 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
       status: currentStatus === "running" ? "IN_PROGRESS" :
         currentStatus === "ended" ? "COMPLETED" : "LOBBY",
       startTime: roundStartTime,
-      endTime: null,
+      endTime: roundEndTime,
       timeRemaining: globalTimeRemaining,
-      duration: ROUND_DURATION
+      duration: ROUND_DURATION_MS
     },
 
     participants: {
@@ -197,9 +219,9 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
   // Add matchmaking cycle info
   if (currentStatus === "running" && roundStartTime) {
     const elapsed = Date.now() - roundStartTime;
-    const timeIntoCycle = elapsed % MATCHMAKING_INTERVAL;
+    const timeIntoCycle = elapsed % MATCHMAKING_INTERVAL_MS;
     unifiedState.roundSpecific.nextMatchmakingCycle =
-      Math.floor((MATCHMAKING_INTERVAL - timeIntoCycle) / 1000);
+      MATCHMAKING_INTERVAL_MS - timeIntoCycle;
   }
 
   // Add session data if in match
@@ -216,12 +238,13 @@ const transformToUnifiedState = async (userId, allParticipants, socket = null) =
         const opponentId = match.players.find(pId => pId !== userId);
         const opponent = opponentId ? allParticipants.find(p => p.id === opponentId) : null;
 
+        const matchEndTime = resolveMatchEndTime(match);
         unifiedState.session = {
           type: 'match',
           id: matchId,
           startTime: match.startTime,
-          endTime: match.startTime + match.duration,
-          timeRemaining: Math.max(0, Math.floor((match.duration - (Date.now() - match.startTime)) / 1000)),
+          endTime: matchEndTime,
+          timeRemaining: remainingMs(matchEndTime),
           opponent: opponent ? {
             id: opponent.id,
             username: opponent.username,
@@ -242,9 +265,13 @@ const broadcastLobbyUpdate = async (io) => {
   try {
     const participantsList = await getEnrichedParticipantsList();
     const keys = getRedisKeys();
-    const currentStatus = await redis.get(keys.status);
-    const startTimeStr = await redis.get(keys.startTime);
-    const roundStartTime = startTimeStr ? parseInt(startTimeStr) : null;
+    const [currentStatus, startTimeStr, endTimeStr] = await Promise.all([
+      redis.get(keys.status),
+      redis.get(keys.startTime),
+      redis.get(keys.endTime),
+    ]);
+    const { startTime: roundStartTime, endTime: roundEndTime, timeRemaining: globalTimeRemaining } =
+      resolveRoundTimes(startTimeStr, endTimeStr, currentStatus);
 
     const pairingMap = await getMatchPairingMap();
     const usernameById = new Map(participantsList.map(p => [p.id, p.username]));
@@ -266,10 +293,6 @@ const broadcastLobbyUpdate = async (io) => {
       }
     });
 
-    const globalTimeRemaining = roundStartTime
-      ? Math.max(0, Math.floor((ROUND_DURATION - (Date.now() - roundStartTime)) / 1000))
-      : 0;
-
     const lobbyUpdate = {
       success: true,
       timestamp: Date.now(),
@@ -279,9 +302,9 @@ const broadcastLobbyUpdate = async (io) => {
         status: currentStatus === "running" ? "IN_PROGRESS" :
           currentStatus === "ended" ? "COMPLETED" : "LOBBY",
         startTime: roundStartTime,
-        endTime: null,
+        endTime: roundEndTime,
         timeRemaining: globalTimeRemaining,
-        duration: ROUND_DURATION
+        duration: ROUND_DURATION_MS
       },
       participants: {
         total: participantsList.length,
@@ -326,7 +349,7 @@ const startJanitor = (io) => {
     } catch (error) {
       console.error('[Janitor Error]', error);
     }
-  }, JANITOR_INTERVAL);
+  }, JANITOR_INTERVAL_MS);
   console.log('[System] Persistent timer janitor started.');
 };
 
@@ -354,7 +377,7 @@ export const handleMatchEnd = async (io, matchId, winnerId, force_end = false) =
 
     const player = JSON.parse(playerStr);
     player.status = 'cooldown';
-    player.cooldownEndTime = Date.now() + COOLDOWN_DURATION;
+    player.cooldownEndTime = Date.now() + COOLDOWN_DURATION_MS;
     player.eventScore = scoreMap.get(playerId) ?? player.eventScore;
 
     await redis.hset(keys.participants, playerId, JSON.stringify(player));
@@ -413,12 +436,13 @@ export const round1RecoveryHandler = async (io, socket, userId) => {
         const opponentStr = await redis.hget(keys.participants, opponentId);
         const opponent = opponentStr ? JSON.parse(opponentStr) : null;
 
+        const matchEndTime = resolveMatchEndTime(match);
         socket.emit('round1:matchFound', {
           type: 'match',
           id: matchId,
           startTime: match.startTime,
-          endTime: match.startTime + match.duration,
-          timeRemaining: Math.max(0, Math.floor((match.duration - (Date.now() - match.startTime)) / 1000)),
+          endTime: matchEndTime,
+          timeRemaining: remainingMs(matchEndTime),
           opponent: {
             id: opponentId,
             username: opponent?.username ?? 'Unknown',
@@ -493,7 +517,7 @@ export const handleMatchForfeit = async (io, forfeitingUserId) => {
 
       const participant = JSON.parse(participantStr);
       participant.status = 'cooldown';
-      participant.cooldownEndTime = Date.now() + COOLDOWN_DURATION;
+      participant.cooldownEndTime = Date.now() + COOLDOWN_DURATION_MS;
 
       await redis.hset(keys.participants, playerId, JSON.stringify(participant));
 
@@ -637,12 +661,14 @@ export const endRound1 = async (io) => {
     await redis.hset(keys.participants, id, JSON.stringify(p));
   }
 
+  const endedAt = Date.now();
   await redis.set(keys.status, "ended");
+  await redis.set(keys.endTime, endedAt);
   await prisma.round.update({
     where: { roundNumber: 1 },
     data: { status: "COMPLETED" },
   });
-  io.emit('round1:ended');
+  io.emit('round1:ended', { endTime: endedAt });
 
   await broadcastLobbyUpdate(io);
 };
@@ -651,7 +677,7 @@ export const round1Handler = (io, socket) => {
   startJanitor(io);
 
   if (!lobbyBroadcastInterval) {
-    lobbyBroadcastInterval = setInterval(() => broadcastLobbyUpdate(io), LOBBY_UPDATE_INTERVAL);
+    lobbyBroadcastInterval = setInterval(() => broadcastLobbyUpdate(io), LOBBY_UPDATE_INTERVAL_MS);
   }
 
   const validateUser = () => {
@@ -665,8 +691,8 @@ export const round1Handler = (io, socket) => {
     if (matchmakingCycleInterval) clearInterval(matchmakingCycleInterval);
     matchmakingCycleInterval = setInterval(() => {
       const elapsed = Date.now() - roundStartTime;
-      const timeIntoCycle = elapsed % MATCHMAKING_INTERVAL;
-      const nextCycle = Math.floor((MATCHMAKING_INTERVAL - timeIntoCycle) / 1000);
+      const timeIntoCycle = elapsed % MATCHMAKING_INTERVAL_MS;
+      const nextCycle = MATCHMAKING_INTERVAL_MS - timeIntoCycle;
       io.emit('round1:matchmakingCycle', { nextCycle });
     }, 1000);
   };
@@ -709,18 +735,15 @@ export const round1Handler = (io, socket) => {
     }
 
 
-    let timerDuration;
-    if (difficulty === 'R1_HARD') timerDuration = 25 * 60 * 1000;
-    else if (difficulty === 'R1_MEDIUM') timerDuration = 20 * 60 * 1000;
-    else timerDuration = 15 * 60 * 1000;
-
+    const timerDuration = MATCH_DURATION_MS[difficulty] || MATCH_DURATION_MS.R1_EASY;
 
     try {
       const newMatch = await prisma.match.create({ data: { playerAId: player1.id, playerBId: player2.id, problemId: question.id, status: 'ONGOING' } });
       const matchId = newMatch.id;
       const startTime = Date.now();
+      const endTime = startTime + timerDuration;
       const keys = getRedisKeys();
-      const matchDetails = { id: matchId, players: [player1.id, player2.id], problemId: question.id, startTime, duration: timerDuration, difficulty };
+      const matchDetails = { id: matchId, players: [player1.id, player2.id], problemId: question.id, startTime, endTime, duration: timerDuration, difficulty };
 
 
       await redis.multi()
@@ -737,8 +760,8 @@ export const round1Handler = (io, socket) => {
         type: 'match',
         id: matchId,
         startTime,
-        endTime: startTime + timerDuration,
-        timeRemaining: Math.floor(timerDuration / 1000),
+        endTime,
+        timeRemaining: timerDuration,
         opponent: {
           id: player2.id,
           username: player2.username,
@@ -751,8 +774,8 @@ export const round1Handler = (io, socket) => {
         type: 'match',
         id: matchId,
         startTime,
-        endTime: startTime + timerDuration,
-        timeRemaining: Math.floor(timerDuration / 1000),
+        endTime,
+        timeRemaining: timerDuration,
         opponent: {
           id: player1.id,
           username: player1.username,
@@ -774,10 +797,10 @@ export const round1Handler = (io, socket) => {
         if (!currentMatchStr) return clearInterval(timerInterval);
         const currentMatch = JSON.parse(currentMatchStr);
 
-        const elapsed = Date.now() - currentMatch.startTime;
-        const timeRemaining = Math.max(0, Math.floor((currentMatch.duration - elapsed) / 1000));
+        const matchEndTime = resolveMatchEndTime(currentMatch);
+        const timeRemaining = remainingMs(matchEndTime);
 
-        io.to(matchRoom).emit('round1:timerUpdate', { timeRemaining });
+        io.to(matchRoom).emit('round1:timerUpdate', { timeRemaining, endTime: matchEndTime });
 
         if (timeRemaining <= 0) {
           clearInterval(timerInterval);
@@ -961,8 +984,10 @@ export const round1Handler = (io, socket) => {
 
     console.log(`--- ADMIN (${userId}): Round 1 starting! ---`);
     const roundStartTime = Date.now();
+    const roundEndTime = roundStartTime + ROUND_DURATION_MS;
     await redis.set(keys.status, "running");
     await redis.set(keys.startTime, roundStartTime);
+    await redis.set(keys.endTime, roundEndTime);
     await prisma.round.update({ where: { roundNumber: ROUND_NUMBER }, data: { status: 'IN_PROGRESS' } });
 
     const participants = await redis.hgetall(keys.participants);
@@ -977,17 +1002,16 @@ export const round1Handler = (io, socket) => {
     await multi.exec();
 
 
-    globalTimer = setTimeout(() => endRound1(io), ROUND_DURATION);
+    globalTimer = setTimeout(() => endRound1(io), ROUND_DURATION_MS);
     if (globalTimerInterval) clearInterval(globalTimerInterval);
     globalTimerInterval = setInterval(() => {
-      const elapsed = Date.now() - roundStartTime;
-      const remaining = Math.max(0, Math.floor((ROUND_DURATION - elapsed) / 1000));
-      io.emit('round1:globalTimer', { timeRemaining: remaining });
+      const remaining = remainingMs(roundEndTime);
+      io.emit('round1:globalTimer', { timeRemaining: remaining, endTime: roundEndTime });
       if (remaining <= 0) clearInterval(globalTimerInterval);
     }, 1000);
 
 
-    matchmakingInterval = setInterval(runMatchmakingCycle, MATCHMAKING_INTERVAL);
+    matchmakingInterval = setInterval(runMatchmakingCycle, MATCHMAKING_INTERVAL_MS);
     startMatchmakingCycleBroadcast(roundStartTime);
     runMatchmakingCycle();
 
@@ -999,9 +1023,9 @@ export const round1Handler = (io, socket) => {
         isActive: true,
         status: 'IN_PROGRESS',
         startTime: roundStartTime,
-        endTime: roundStartTime + ROUND_DURATION,
-        timeRemaining: Math.floor(ROUND_DURATION / 1000),
-        duration: ROUND_DURATION
+        endTime: roundEndTime,
+        timeRemaining: ROUND_DURATION_MS,
+        duration: ROUND_DURATION_MS
       }
     };
 
