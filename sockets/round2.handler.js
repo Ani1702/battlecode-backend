@@ -584,9 +584,24 @@ export const round2Handler = (io, socket) => {
         console.error("Error broadcasting current round on R2 start:", e);
       }
 
-      // 🔑 Push canonical state to all participants after round start
+      // Push per-user state so the lobby can redirect to /r2/{role}
+      const startTime = endTime - ROUND_DURATION_MS;
       for (const player of players) {
-        io.to(`user:${player.id}`).emit("round2:getState");
+        io.to(`user:${player.id}`).emit("round2:state", {
+          success: true,
+          timestamp: Date.now(),
+          roundNumber: 2,
+          round: {
+            isActive: true,
+            status: "IN_PROGRESS",
+            startTime,
+            endTime,
+            timeRemaining: ROUND_DURATION_MS,
+            duration: ROUND_DURATION_MS,
+          },
+          currentUser: player,
+          roundSpecific: { role: player.role },
+        });
       }
       cb?.({ success: true });
     } catch (err) {
