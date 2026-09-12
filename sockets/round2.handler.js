@@ -1,6 +1,6 @@
 import redis from "../config/redis.js";
 import prisma from "../config/prisma.js";
-import { broadcastLeaderboard, getCurrentRound } from "./global.handler.js";
+import { broadcastLeaderboard, broadcastCurrentRound } from "./global.handler.js";
 // --- Constants ---
 const SECOND = 1000;
 const MINUTE = 60 * SECOND;
@@ -576,10 +576,8 @@ export const round2Handler = (io, socket) => {
       await Promise.all([multi.exec(), ...dbUpdatePromises]);
       await broadcastLobbyUpdate();
 
-      // Broadcast current round update to all connected sockets
       try {
-        const currentRoundData = await getCurrentRound();
-        io.emit("server:currentRound", currentRoundData);
+        await broadcastCurrentRound(io);
       } catch (e) {
         console.error("Error broadcasting current round on R2 start:", e);
       }
@@ -1277,6 +1275,7 @@ export const round2Handler = (io, socket) => {
         where: { roundNumber: 2 },
         data: { status: "LOBBY" },
       });
+      await broadcastCurrentRound(io);
 
       console.log("✅ [ADMIN] Round 2 reset complete");
       return true;
@@ -1566,6 +1565,7 @@ export const endRound2 = async (io, forceEnd = false) => {
       where: { roundNumber: 2 },
       data: { status: "COMPLETED" }
     });
+    await broadcastCurrentRound(io);
     console.log("✅ Round 2 status updated to COMPLETED");
 
     // Broadcast round ended to all clients

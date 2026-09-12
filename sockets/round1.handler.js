@@ -1,6 +1,6 @@
 import redis from "../config/redis.js";
 import prisma from "../config/prisma.js";
-import { broadcastLeaderboard } from "./global.handler.js";
+import { broadcastLeaderboard, broadcastCurrentRound } from "./global.handler.js";
 
 // Time units
 const SECOND = 1000;
@@ -668,6 +668,7 @@ export const endRound1 = async (io) => {
     where: { roundNumber: 1 },
     data: { status: "COMPLETED" },
   });
+  await broadcastCurrentRound(io);
   io.emit('round1:ended', { endTime: endedAt });
 
   await broadcastLobbyUpdate(io);
@@ -908,6 +909,7 @@ export const round1Handler = (io, socket) => {
         where: { roundNumber: 1 },
         data: { status: "LOBBY" },
       });
+      await broadcastCurrentRound(io);
 
       if (lobbyBroadcastInterval) {
         clearInterval(lobbyBroadcastInterval);
@@ -989,6 +991,7 @@ export const round1Handler = (io, socket) => {
     await redis.set(keys.startTime, roundStartTime);
     await redis.set(keys.endTime, roundEndTime);
     await prisma.round.update({ where: { roundNumber: ROUND_NUMBER }, data: { status: 'IN_PROGRESS' } });
+    await broadcastCurrentRound(io);
 
     const participants = await redis.hgetall(keys.participants);
     const multi = redis.multi();

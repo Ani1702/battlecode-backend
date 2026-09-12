@@ -1,5 +1,6 @@
 import redis from "../config/redis.js";
 import prisma from "../config/prisma.js";
+import { broadcastCurrentRound } from "./global.handler.js";
 
 /**
  * ROUND 0 SOCKET HANDLER
@@ -169,6 +170,7 @@ export const round0Handler = (io, socket) => {
               where: { roundNumber: 0 },
               data: { status: 'COMPLETED' } // UPPERCASE for database
             });
+            await broadcastCurrentRound(io);
           } catch (error) {
             console.error('Error updating Round 0 database status to COMPLETED:', error);
           }
@@ -502,6 +504,7 @@ export const round0Handler = (io, socket) => {
           data: { status: 'IN_PROGRESS' } // UPPERCASE for database
         });
         console.log('Round 0 database status updated to IN_PROGRESS');
+        await broadcastCurrentRound(io);
       } catch (error) {
         console.error('Error updating Round 0 database status:', error);
         // This is critical - we should rollback Redis operations
@@ -1198,6 +1201,8 @@ export const endRound0 = async (io) => {
     where: { roundNumber: 0 },
     data: { status: "COMPLETED" }, // UPPERCASE for database
   });
+
+  await broadcastCurrentRound(io);
 
   io.to('round0').emit('round0:ended', { message: 'Round 0 has ended!' });
 
